@@ -1,0 +1,19 @@
+# Node.js
+node_modules/
+.env
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+dist/
+build/
+.DS_Store
+*.log
+coverage/
+.idea/
+.vscode/
+*.tgz
+package-lock.json
+yarn.lock
+
+# Optional: OS-specific
+Thumbs.db
