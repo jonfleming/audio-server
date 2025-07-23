@@ -1,4 +1,5 @@
 const express = require('express');
+const WebSocket = require('ws');
 const fs = require('fs');
 const app = express();
 const PORT = 3000;
@@ -10,52 +11,66 @@ const NUM_CHANNELS = 1;
 const BITS_PER_SAMPLE = 16;
 const tenSecondsOfData = SAMPLE_RATE * 10 * NUM_CHANNELS * BITS_PER_SAMPLE / 8;
 
-// Open a write stream for continuous appending
 let audioStream = null;
-
 let filesize = 0;
 let outputId = 0;
 let recordingStarted = false;
 
 console.log(`tenSecondsOfData: ${tenSecondsOfData} bytes`);
 
-app.post('/upload', (req, res) => {
-  let startTime = Date.now();
+// Create WebSocket server
+const wss = new WebSocket.Server({ port: PORT });
+
+wss.on('connection', (ws) => {
+  console.log('WebSocket client connected');
 
   if (!recordingStarted) {
     startRecording(outputId);
     recordingStarted = true;
   }
 
+  ws.on('message', (data) => {
+    if (Buffer.isBuffer(data)) {
+      // Handle binary audio data
+      audioStream.write(data);
+      filesize += data.length;
+      console.log(`Received ${data.length} bytes of data`);
 
-  req.on('data', chunk => {
-    audioStream.write(chunk);
-    filesize += chunk.length;
-    console.log(`Received ${chunk.length} bytes of data`);
+      if (filesize > tenSecondsOfData) {
+        // Stop the current recording
+        audioStream.end();
+        console.log(`Recording ${outputId} ended.`);
+        convertRawToWav(outputId++);
 
-    const elapsedTime = Date.now() - startTime;
-
-    console.log(`Current filesize: ${filesize} bytes, Elapsed time: ${elapsedTime} ms`);
-    if (filesize > tenSecondsOfData || elapsedTime > 10000) {
-
-      // Stop the current recording
-      audioStream.end();
-
-      // start a new recording
-      startRecording(outputId + 1);
-
-      console.log(`Recording ${outputId} ended.`);
-      convertRawToWav(outputId++);      
+        // Start a new recording
+        startRecording(outputId);
+      }
+    } else {
+      // Handle text messages (e.g., stop command)
+      const message = data.toString();
+      if (message === 'stop') {
+        audioStream.end();
+        console.log(`Recording ${outputId} ended due to stop command.`);
+        convertRawToWav(outputId++);
+        recordingStarted = false;
+        ws.send('stop'); // Acknowledge stop
+      }
     }
-
   });
-  req.on('end', () => {
-    res.sendStatus(200);
-  });
-});
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  ws.on('close', () => {
+    console.log('WebSocket client disconnected');
+    if (recordingStarted) {
+      audioStream.end();
+      console.log(`Recording ${outputId} ended due to disconnect.`);
+      convertRawToWav(outputId++);
+      recordingStarted = false;
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
 });
 
 function startRecording(id) {
@@ -65,19 +80,21 @@ function startRecording(id) {
 }
 
 function convertRawToWav(id) {
-  const rawData = fs.readFileSync(`${RAW_FILE}-${id}.raw`);
-
-  if (rawData.length === 0) {
-    console.log(`No data to convert for ${RAW_FILE}-${id}.raw`);
+  const rawFilePath = `${RAW_FILE}-${id}.raw`;
+  if (!fs.existsSync(rawFilePath) || fs.statSync(rawFilePath).size === 0) {
+    console.log(`No data to convert for ${rawFilePath}`);
     return;
   }
 
-  const wavWriter = fs.createWriteStream(`${WAV_FILE}-${outputId}.wav`);
+  const rawData = fs.readFileSync(rawFilePath);
+  const wavWriter = fs.createWriteStream(`${WAV_FILE}-${id}.wav`);
 
   writeWavHeader(wavWriter, rawData.length);
   wavWriter.write(rawData);
   wavWriter.end(() => {
-    console.log(`WAV file written to ${WAV_FILE}-${outputId}.wav`);
+    console.log(`WAV file written to ${WAV_FILE}-${id}.wav`);
+    // Optionally delete raw file to save space
+    fs.unlinkSync(rawFilePath);
   });
 }
 
@@ -113,3 +130,5 @@ function writeWavHeader(writer, dataLength) {
 
   writer.write(header);
 }
+
+console.log(`WebSocket server listening on ws://localhost:${PORT}`);
