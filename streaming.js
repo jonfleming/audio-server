@@ -1,11 +1,13 @@
 const express = require('express');
 const WebSocket = require('ws');
 const fs = require('fs');
+const path = require('path');
 const app = express();
 const PORT = 3000;
 
 const RAW_FILE = 'raw-audio';
 const WAV_FILE = 'output-audio';
+const uploadDir = path.join(__dirname, 'uploads');
 const SAMPLE_RATE = 16000;
 const NUM_CHANNELS = 1;
 const BITS_PER_SAMPLE = 16;
@@ -19,7 +21,12 @@ let recordingStarted = false;
 console.log(`tenSecondsOfData: ${tenSecondsOfData} bytes`);
 
 // Create WebSocket server
-const wss = new WebSocket.Server({ port: PORT });
+const wss = new WebSocket.Server({ port: PORT, path: '/' });
+
+// Ensure the uploads directory exists
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
 
 wss.on('connection', (ws) => {
   console.log('WebSocket client connected');
@@ -38,7 +45,7 @@ wss.on('connection', (ws) => {
 
       if (filesize > tenSecondsOfData) {
         // Stop the current recording
-        audioStream.end();
+        closeStream();
         console.log(`Recording ${outputId} ended.`);
         convertRawToWav(outputId++);
 
@@ -49,7 +56,7 @@ wss.on('connection', (ws) => {
       // Handle text messages (e.g., stop command)
       const message = data.toString();
       if (message === 'stop') {
-        audioStream.end();
+        closeStream();
         console.log(`Recording ${outputId} ended due to stop command.`);
         convertRawToWav(outputId++);
         recordingStarted = false;
@@ -61,7 +68,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('WebSocket client disconnected');
     if (recordingStarted) {
-      audioStream.end();
+      closeStream();
       console.log(`Recording ${outputId} ended due to disconnect.`);
       convertRawToWav(outputId++);
       recordingStarted = false;
@@ -73,26 +80,36 @@ wss.on('connection', (ws) => {
   });
 });
 
+function closeStream() {
+  if (audioStream) {
+    audioStream.end();
+    audioStream.close();
+    audioStream = null;
+  }
+}
+
 function startRecording(id) {
   filesize = 0;
-  audioStream = fs.createWriteStream(`${RAW_FILE}-${id}.raw`, { flags: 'a' });
+  const rawFilePath = path.join(uploadDir, `${RAW_FILE}-${id}.raw`);
+  audioStream = fs.createWriteStream(rawFilePath, { flags: 'a' });
   console.log(`Recording ${id} started...`);
 }
 
 function convertRawToWav(id) {
-  const rawFilePath = `${RAW_FILE}-${id}.raw`;
+  const rawFilePath = path.join(uploadDir, `${RAW_FILE}-${id}.raw`);
   if (!fs.existsSync(rawFilePath) || fs.statSync(rawFilePath).size === 0) {
     console.log(`No data to convert for ${rawFilePath}`);
     return;
   }
 
   const rawData = fs.readFileSync(rawFilePath);
-  const wavWriter = fs.createWriteStream(`${WAV_FILE}-${id}.wav`);
+  const filename = path.join(uploadDir, `${WAV_FILE}-${id}.wav`);
+  const wavWriter = fs.createWriteStream(filename);
 
   writeWavHeader(wavWriter, rawData.length);
   wavWriter.write(rawData);
   wavWriter.end(() => {
-    console.log(`WAV file written to ${WAV_FILE}-${id}.wav`);
+    console.log(`WAV file written to ${filename}`);
     // Optionally delete raw file to save space
     fs.unlinkSync(rawFilePath);
   });
