@@ -3,12 +3,51 @@ const fs = require('fs');
 const app = express();
 const PORT = 3000;
 
+const RAW_FILE = 'raw-audio';
+const WAV_FILE = 'output-audio';
+const SAMPLE_RATE = 16000;
+const NUM_CHANNELS = 1;
+const BITS_PER_SAMPLE = 16;
+const tenSecondsOfData = SAMPLE_RATE * 10 * NUM_CHANNELS * BITS_PER_SAMPLE / 8;
+
 // Open a write stream for continuous appending
-const audioStream = fs.createWriteStream('audio.raw', { flags: 'a' });
+let audioStream = null;
+
+let filesize = 0;
+let outputId = 0;
+let recordingStarted = false;
+
+console.log(`tenSecondsOfData: ${tenSecondsOfData} bytes`);
 
 app.post('/upload', (req, res) => {
+  let startTime = Date.now();
+
+  if (!recordingStarted) {
+    startRecording(outputId);
+    recordingStarted = true;
+  }
+
+
   req.on('data', chunk => {
     audioStream.write(chunk);
+    filesize += chunk.length;
+    console.log(`Received ${chunk.length} bytes of data`);
+
+    const elapsedTime = Date.now() - startTime;
+
+    console.log(`Current filesize: ${filesize} bytes, Elapsed time: ${elapsedTime} ms`);
+    if (filesize > tenSecondsOfData || elapsedTime > 10000) {
+
+      // Stop the current recording
+      audioStream.end();
+
+      // start a new recording
+      startRecording(outputId + 1);
+
+      console.log(`Recording ${outputId} ended.`);
+      convertRawToWav(outputId++);      
+    }
+
   });
   req.on('end', () => {
     res.sendStatus(200);
@@ -18,3 +57,59 @@ app.post('/upload', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
+function startRecording(id) {
+  filesize = 0;
+  audioStream = fs.createWriteStream(`${RAW_FILE}-${id}.raw`, { flags: 'a' });
+  console.log(`Recording ${id} started...`);
+}
+
+function convertRawToWav(id) {
+  const rawData = fs.readFileSync(`${RAW_FILE}-${id}.raw`);
+
+  if (rawData.length === 0) {
+    console.log(`No data to convert for ${RAW_FILE}-${id}.raw`);
+    return;
+  }
+
+  const wavWriter = fs.createWriteStream(`${WAV_FILE}-${outputId}.wav`);
+
+  writeWavHeader(wavWriter, rawData.length);
+  wavWriter.write(rawData);
+  wavWriter.end(() => {
+    console.log(`WAV file written to ${WAV_FILE}-${outputId}.wav`);
+  });
+}
+
+function writeWavHeader(writer, dataLength) {
+  const header = Buffer.alloc(44);
+
+  // ChunkID "RIFF"
+  header.write('RIFF', 0);
+  // ChunkSize (file size - 8)
+  header.writeUInt32LE(36 + dataLength, 4);
+  // Format "WAVE"
+  header.write('WAVE', 8);
+  // Subchunk1ID "fmt "
+  header.write('fmt ', 12);
+  // Subchunk1Size (16 for PCM)
+  header.writeUInt32LE(16, 16);
+  // AudioFormat (1 for PCM)
+  header.writeUInt16LE(1, 20);
+  // NumChannels
+  header.writeUInt16LE(NUM_CHANNELS, 22);
+  // SampleRate
+  header.writeUInt32LE(SAMPLE_RATE, 24);
+  // ByteRate = SampleRate * NumChannels * BitsPerSample/8
+  header.writeUInt32LE(SAMPLE_RATE * NUM_CHANNELS * BITS_PER_SAMPLE / 8, 28);
+  // BlockAlign = NumChannels * BitsPerSample/8
+  header.writeUInt16LE(NUM_CHANNELS * BITS_PER_SAMPLE / 8, 32);
+  // BitsPerSample
+  header.writeUInt16LE(BITS_PER_SAMPLE, 34);
+  // Subchunk2ID "data"
+  header.write('data', 36);
+  // Subchunk2Size (data length)
+  header.writeUInt32LE(dataLength, 40);
+
+  writer.write(header);
+}
