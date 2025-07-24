@@ -38,6 +38,19 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (data) => {
     if (Buffer.isBuffer(data)) {
+      if (data.length === 4) {
+        const command = data.toString();
+        if (command === 'stop') {
+          closeStream();
+          console.log(`Recording ${outputId} ended due to stop command.`);
+          convertRawToWav(outputId++);
+
+          startRecording(outputId);
+          
+          return;
+        }
+      }
+
       // Handle binary audio data
       audioStream.write(data);
       filesize += data.length;
@@ -55,13 +68,7 @@ wss.on('connection', (ws) => {
     } else {
       // Handle text messages (e.g., stop command)
       const message = data.toString();
-      if (message === 'stop') {
-        closeStream();
-        console.log(`Recording ${outputId} ended due to stop command.`);
-        convertRawToWav(outputId++);
-        recordingStarted = false;
-        ws.send('stop'); // Acknowledge stop
-      }
+      console.log('Received message:', message);
     }
   });
 
